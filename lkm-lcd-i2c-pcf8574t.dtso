@@ -1,0 +1,56 @@
+/dts-v1/;
+/plugin/;
+
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+    compatible = "raspberrypi,model-zero-2-w", "brcm,bcm2837";
+
+	fragment@0 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			pcf857x: pcf857x@27 {
+				compatible = "nxp,pcf8574";
+				reg = <0x27>;
+				gpio-controller;
+				#gpio-cells = <2>;
+				gpio-line-names = "d4", "d5", "d6", "d7", "en", "rw", "rs", "bl";
+				status = "okay";
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc";
+		__overlay__ {
+			lcd@0 {
+				status = "okay";
+				compatible = "mycompany,lcd1602";
+				rs-gpios = <&pcf857x 0 GPIO_ACTIVE_HIGH>;
+				rw-gpios = <&pcf857x 1 GPIO_ACTIVE_HIGH>;
+				en-gpios = <&pcf857x 2 GPIO_ACTIVE_HIGH>;
+				bl-gpios = <&pcf857x 3 GPIO_ACTIVE_HIGH>;
+				d4-gpios = <&pcf857x 4 GPIO_ACTIVE_HIGH>;
+				d5-gpios = <&pcf857x 5 GPIO_ACTIVE_HIGH>;
+				d6-gpios = <&pcf857x 6 GPIO_ACTIVE_HIGH>;
+				d7-gpios = <&pcf857x 7 GPIO_ACTIVE_HIGH>;
+			};
+		};
+	};
+
+	__overrides__ {
+		/*
+		pcf8574  = <&pcf857x>,"compatible=nxp,pcf8574",  <&pcf857x>,"reg:0=0x20";
+		pcf8574  = <&pcf857x>,"compatible=nxp,pcf8574",  <&pcf857x>,"reg:0=0x27";
+		pcf8574a = <&pcf857x>,"compatible=nxp,pcf8574a", <&pcf857x>,"reg:0=0x38";
+		pcf8575  = <&pcf857x>,"compatible=nxp,pcf8575",  <&pcf857x>,"reg:0=0x20";
+		pca8574  = <&pcf857x>,"compatible=nxp,pca8574", <&pcf857x>,"reg:0=0x20";
+		*/
+		addr = <&pcf857x>,"reg:0";
+	};
+
+};
