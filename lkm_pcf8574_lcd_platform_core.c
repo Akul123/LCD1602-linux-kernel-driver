@@ -16,21 +16,14 @@
 #include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
 
-#define PIN_RS 	0x00 // RS Register Select
-#define PIN_RW 	0x01 // R/W Read/Write
-#define PIN_EN 	0x02 // Enable
-#define PIN_BL 	0x03 // Back light
-#define PIN_D4 	0x04 // D4
-#define PIN_D5 	0x05 // D5
-#define PIN_D6 	0x06 // D6
-#define PIN_D7 	0x07 // D7
-
 #define FONT_5x10		1
 #define FONT_5x7		0
 #define ROWS_2			1
 #define ROW2_1			0
 #define DISPLAY_SHIFT	1
 #define CURSOR_SHIFT	0
+#define RIGHT			1
+#define LEFT			0
 #define SHIFT			1
 #define NOT_SHIFT		0
 #define INCREMENT		1
@@ -54,12 +47,24 @@
 #define ROW_LENGTH		16
 #define LCD_BUFFER_LEN	32 // 16 CHARS * 2 ROWS
 
+struct lcd_shift_data {
+	u_int8_t sc;
+	u_int8_t rl;
+} __attribute__((packed));
+
+struct lcd_string_data {
+    char data[LCD_BUFFER_LEN+1];
+    size_t length;  // Actual string length (not including null)
+} __attribute__((packed));
+
 #define LCD_MAGIC 		  0x5A
 #define LCD_CLEAR_SCREEN  _IO(LCD_MAGIC, 0)
 #define LCD_BACKLIGHT_ON  _IO(LCD_MAGIC, 1)
 #define LCD_BACKLIGHT_OFF _IO(LCD_MAGIC, 2)
-#define LCD_WR_VALUE      _IOW(LCD_MAGIC, 3, int)  // if writing a value
-#define LCD_RD_VALUE      _IOR(LCD_MAGIC, 4, int)  // if reading a value
+#define LCD_WR_VALUE      _IOW(LCD_MAGIC, 3, int)
+#define LCD_RD_VALUE      _IOR(LCD_MAGIC, 4, struct lcd_string_data)
+#define LCD_SHIFT		  _IOW(LCD_MAGIC, 5, int)
+#define LCD_CURSOR_RETURN _IO(LCD_MAGIC, 6)
 
 #define TRUE 	1
 #define FALSE	0
@@ -94,7 +99,6 @@ typedef struct lcd_device{
 	//char data[LCD_BUFFER_LEN];
 	u8 data[LCD_BUFFER_LEN];
 	u8 data_len;
-	u8 first_write;
 	u8 row;
 	u8 col;
 } lcd1602_dev;
@@ -154,9 +158,29 @@ static void lcd_clear_screen(lcd1602_dev *dev)
 	dev->row = 0;
 	dev->col = 0;
 	dev->data_len = 0;
-	dev->first_write = 0;
 	memset(dev->data, 0, LCD_BUFFER_LEN);
 	write_byte(dev, 0x01, false);
+	msleep(2);
+}
+
+static void lcd_cursor_return(lcd1602_dev *dev) {
+	pr_info("lcd cursor return\n");
+	write_byte(dev, 0x02, false);
+	msleep(2);
+}
+
+static void lcd_shift(lcd1602_dev *dev, u8 sc, u8 rl) {
+	pr_info("lcd shift\n");
+
+	if(sc == DISPLAY_SHIFT && rl == RIGHT)
+		write_byte(dev, 0x1C, false);
+	else if(sc == DISPLAY_SHIFT && rl == LEFT)
+		write_byte(dev, 0x18, false);
+	else if(sc == CURSOR_SHIFT && rl == RIGHT)
+		write_byte(dev, 0x14, false);
+	else if(sc == CURSOR_SHIFT && rl == LEFT)
+		write_byte(dev, 0x10, false);
+
 	msleep(2);
 }
 
@@ -224,6 +248,8 @@ static void initialize_lcd(lcd1602_dev *dev)
 
 	/* Display ON, cursor OFF, blink OFF (0x0C)*/
 	write_byte(dev, 0x0C, false);
+	/* Display ON, cursor ON, blink ON (0x0F)*/
+	write_byte(dev, 0x0F, false);
 	udelay(200);
 
 	pr_info("4 bit initialization done\n");
@@ -255,14 +281,14 @@ static void lcd_write(lcd1602_dev *lcd_device, const u8 *buffer, const size_t le
 			// first row continue to second
 			if(lcd_device->row == 0 && lcd_device->data_len>ROW_LENGTH-1){
 				lcd_device->row++;
-				pr_info("input is to long, moving to the next row\n");
+				pr_info("input is too long, moving to the next row\n");
 				lcd_set_cursor(lcd_device);
 			}
-				lcd_device->data[i] = buffer[lcd_device->data_len-start];
-				lcd_device->data_len++;
+			lcd_device->data[i] = buffer[lcd_device->data_len-start];
+			lcd_device->data_len++;
 
-				write_byte(lcd_device, lcd_device->data[i], SET_RS);
-				continue;
+			write_byte(lcd_device, lcd_device->data[i], SET_RS);
+			continue;
 		}
 	}
 }
@@ -285,15 +311,21 @@ static struct file_operations fops = {
 /* This function will be called when we write IOCTL on the Device file */
 static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+	pr_info("received command %d\n", cmd);
 	switch(cmd) {
 		case LCD_WR_VALUE:
 			char user_value[LCD_BUFFER_LEN];
 			memset(user_value, 0, LCD_BUFFER_LEN);
-			if( copy_from_user(&user_value ,(char*) arg, sizeof(user_value)) )
+			if( copy_from_user(&user_value ,(char*) arg, sizeof(user_value)))
 				pr_err("Data Write : Err!\n");
 
-			if (strlen(lcd_drv_data.dev->data)>0)
-				strncat(lcd_drv_data.dev->data, user_value, strlen(user_value));
+			if (strlen(lcd_drv_data.dev->data)>0) {
+				// concat only as much as LCD can take
+				if(lcd_drv_data.dev->data_len + strlen(user_value) > LCD_BUFFER_LEN)
+					strncat(lcd_drv_data.dev->data, user_value, lcd_drv_data.dev->data_len + strlen(user_value) - LCD_BUFFER_LEN);
+				else
+					strncat(lcd_drv_data.dev->data, user_value, strlen(user_value));
+			}
 			else
 				memcpy(lcd_drv_data.dev->data, user_value, strlen(user_value));
 			pr_info("Value to write = %s len = %d \n", lcd_drv_data.dev->data, strlen(lcd_drv_data.dev->data));
@@ -301,10 +333,15 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 			break;
 		case LCD_RD_VALUE:
-			if( copy_to_user((char*) arg, lcd_drv_data.dev->data, lcd_drv_data.dev->data_len) )
-			{
+			struct lcd_string_data lcd_data;
+			memset(&lcd_data, 0, sizeof(struct lcd_string_data));
+
+			memcpy(lcd_data.data, lcd_drv_data.dev->data, lcd_drv_data.dev->data_len);
+			lcd_data.length = lcd_drv_data.dev->data_len;
+
+			if(copy_to_user((struct lcd_string_data __user *)arg, &lcd_data, sizeof(struct lcd_string_data)))
 				pr_err("Data Read : Err!\n");
-			}
+
 			break;
 		case LCD_CLEAR_SCREEN:
 			lcd_clear_screen(lcd_drv_data.dev);
@@ -314,6 +351,18 @@ static long device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			break;
 		case LCD_BACKLIGHT_ON:
 			lcd_backlight_on(lcd_drv_data.dev);
+			break;
+		case LCD_SHIFT:
+			struct lcd_shift_data data;
+			if( copy_from_user(&data ,(struct lcd_shift_data __user *)arg, sizeof(data)))
+				pr_err("Data Write : Err!\n");
+
+			pr_info("Dec: sc=%u, rl=%u\n", data.sc, data.rl);
+
+			lcd_shift(lcd_drv_data.dev, data.sc, data.rl);
+			break;
+		case LCD_CURSOR_RETURN:
+			lcd_cursor_return(lcd_drv_data.dev);
 			break;
 		default:
 			pr_info("Default\n");
@@ -554,3 +603,4 @@ module_platform_driver(lcd_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("me");
+
